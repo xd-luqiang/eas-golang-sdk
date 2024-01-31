@@ -2,6 +2,7 @@ package eas
 
 import (
 	"bytes"
+	"compress/gzip"
 	"fmt"
 	"io/ioutil"
 	"net/http"
@@ -62,6 +63,7 @@ type PredictClient struct {
 	serviceName        string
 	stop               int32
 	client             http.Client
+	Compressed         bool
 }
 
 // NewPredictClient returns an instance of PredictClient
@@ -163,6 +165,10 @@ func (p *PredictClient) SetServiceName(serviceName string) {
 	p.serviceName = serviceName
 }
 
+func (p *PredictClient) SetCompressed(compressed bool) {
+	p.Compressed = compressed
+}
+
 func (p *PredictClient) tryNext(host string) string {
 	return p.endpoint.TryNext(host)
 }
@@ -214,13 +220,45 @@ func (p *PredictClient) BytesPredict(requestData []byte) ([]byte, error) {
 
 		url := p.createUrl(host)
 
-		req, err := http.NewRequest("POST", url, bytes.NewReader(requestData))
-		if err != nil {
-			// retry
-			if i != p.retryCount {
-				continue
+		var req *http.Request
+		var err error
+		if p.Compressed {
+			var compressed bytes.Buffer
+			writer := gzip.NewWriter(&compressed)
+			_, err = writer.Write(requestData)
+			if err != nil {
+				// retry
+				if i != p.retryCount {
+					continue
+				}
+				return nil, NewPredictError(ErrorCodeCreateRequest, url, err.Error())
 			}
-			return nil, NewPredictError(ErrorCodeCreateRequest, url, err.Error())
+			err = writer.Close()
+			if err != nil {
+				// retry
+				if i != p.retryCount {
+					continue
+				}
+				return nil, NewPredictError(ErrorCodeCreateRequest, url, err.Error())
+			}
+			req, err = http.NewRequest("POST", url, &compressed)
+			if err != nil {
+				// retry
+				if i != p.retryCount {
+					continue
+				}
+				return nil, NewPredictError(ErrorCodeCreateRequest, url, err.Error())
+			}
+			req.Header.Set("Content-Encoding", "gzip")
+		} else {
+			req, err = http.NewRequest("POST", url, bytes.NewReader(requestData))
+			if err != nil {
+				// retry
+				if i != p.retryCount {
+					continue
+				}
+				return nil, NewPredictError(ErrorCodeCreateRequest, url, err.Error())
+			}
 		}
 		if p.token != "" {
 			for headerName, headerValue := range headers {
@@ -244,14 +282,42 @@ func (p *PredictClient) BytesPredict(requestData []byte) ([]byte, error) {
 			}
 			return nil, NewPredictError(ErrorCodePerformRequest, url, err.Error())
 		}
-
-		body, err := ioutil.ReadAll(resp.Body)
-		if err != nil {
-			// retry
-			if i != p.retryCount {
-				continue
+		var body []byte
+		if resp.Uncompressed {
+			body, err = ioutil.ReadAll(resp.Body)
+			if err != nil {
+				// retry
+				if i != p.retryCount {
+					continue
+				}
+				return nil, NewPredictError(ErrorCodeReadResponse, url, err.Error())
 			}
-			return nil, NewPredictError(ErrorCodeReadResponse, url, err.Error())
+		} else {
+			// 解压缩响应体
+			reader, err := gzip.NewReader(resp.Body)
+			if err != nil {
+				// retry
+				if i != p.retryCount {
+					continue
+				}
+				return nil, NewPredictError(ErrorCodeReadResponse, url, err.Error())
+			}
+			err = reader.Close()
+			if err != nil {
+				// retry
+				if i != p.retryCount {
+					continue
+				}
+				return nil, NewPredictError(ErrorCodeReadResponse, url, err.Error())
+			}
+			body, err = ioutil.ReadAll(reader)
+			if err != nil {
+				// retry
+				if i != p.retryCount {
+					continue
+				}
+				return nil, NewPredictError(ErrorCodeReadResponse, url, err.Error())
+			}
 		}
 		resp.Body.Close()
 
