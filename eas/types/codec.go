@@ -7,7 +7,7 @@ import (
 	"encoding/json"
 	"io"
 
-	"github.com/pai-eas/eas-golang-sdk/eas/types/queue_service_protos"
+	"github.com/xd-luqiang/eas-golang-sdk/eas/types/queue_service_protos"
 	"google.golang.org/protobuf/proto"
 )
 

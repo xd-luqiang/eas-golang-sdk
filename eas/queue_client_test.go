@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pai-eas/eas-golang-sdk/eas/types"
+	"github.com/xd-luqiang/eas-golang-sdk/eas/types"
 )
 
 const (
