@@ -2,9 +2,11 @@ package eas
 
 import (
 	"bytes"
+	"compress/gzip"
 	"fmt"
 	"io/ioutil"
 	"net/http"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -62,6 +64,7 @@ type PredictClient struct {
 	serviceName        string
 	stop               int32
 	client             http.Client
+	Compressed         bool
 }
 
 // NewPredictClient returns an instance of PredictClient
@@ -100,7 +103,7 @@ func (p *PredictClient) Init() error {
 	return nil
 }
 
-//  Shutdown after called this client instance should not be used again
+// Shutdown after called this client instance should not be used again
 func (p *PredictClient) Shutdown() {
 	atomic.StoreInt32(&(p.stop), 1)
 }
@@ -163,6 +166,10 @@ func (p *PredictClient) SetServiceName(serviceName string) {
 	p.serviceName = serviceName
 }
 
+func (p *PredictClient) SetCompressed(compressed bool) {
+	p.Compressed = compressed
+}
+
 func (p *PredictClient) tryNext(host string) string {
 	return p.endpoint.TryNext(host)
 }
@@ -197,11 +204,65 @@ func (p *PredictClient) generateSignature(requestData []byte) map[string]string 
 	}
 }
 
+// var gzipReaderPool = sync.Pool{
+// 	New: func() interface{} {
+// 		reader, _ := gzip.NewReader(nil)
+// 		return reader
+// 	},
+// }
+
+var gzipWriterPool = sync.Pool{
+	New: func() interface{} {
+		return gzip.NewWriter(nil)
+	},
+}
+
+// func gzipDecompress(body io.Reader) ([]byte, error) {
+// 	reader := gzipReaderPool.Get().(*gzip.Reader)
+// 	defer gzipReaderPool.Put(reader)
+// 	err := reader.Reset(body)
+// 	if err != nil {
+// 		return nil, err
+// 	}
+// 	err = reader.Close()
+// 	if err != nil {
+// 		return nil, err
+// 	}
+// 	outbody, err := ioutil.ReadAll(reader)
+// 	if err != nil {
+// 		return nil, err
+// 	}
+// 	return outbody, nil
+// }
+
+func gzipCompress(data []byte) ([]byte, error) {
+	writer := gzipWriterPool.Get().(*gzip.Writer)
+	defer gzipWriterPool.Put(writer)
+	var buf bytes.Buffer
+	writer.Reset(&buf)
+	_, err := writer.Write(data)
+	if err != nil {
+		return nil, err
+	}
+	err = writer.Close()
+	if err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
 // BytesPredict send the raw request data in byte array through http connections,
 // retry the request automatically when an error occurs
 func (p *PredictClient) BytesPredict(requestData []byte) ([]byte, error) {
 	host := p.tryNext("")
 	headers := p.generateSignature(requestData)
+	if p.Compressed {
+		compressedData, err := gzipCompress(requestData)
+		if err == nil && compressedData != nil {
+			requestData = compressedData
+			headers["Content-Encoding"] = "gzip"
+		}
+	}
 	for i := 0; i <= p.retryCount; i++ {
 		if i != 0 {
 			host = p.tryNext(host)
@@ -244,7 +305,6 @@ func (p *PredictClient) BytesPredict(requestData []byte) ([]byte, error) {
 			}
 			return nil, NewPredictError(ErrorCodePerformRequest, url, err.Error())
 		}
-
 		body, err := ioutil.ReadAll(resp.Body)
 		if err != nil {
 			// retry
