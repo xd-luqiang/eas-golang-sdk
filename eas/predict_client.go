@@ -283,7 +283,7 @@ func (p *PredictClient) BytesPredict(requestData []byte) ([]byte, error) {
 			return nil, NewPredictError(ErrorCodePerformRequest, url, err.Error())
 		}
 		var body []byte
-		if resp.Uncompressed {
+		if resp.Header.Get("Content-Encoding") != "gzip" {
 			body, err = ioutil.ReadAll(resp.Body)
 			if err != nil {
 				// retry
